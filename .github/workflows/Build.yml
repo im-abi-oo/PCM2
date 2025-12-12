@@ -37,7 +37,7 @@ jobs:
         python -m nuitka --standalone --onefile --windows-console-mode=disable --mingw64 --lto=yes --enable-plugin=pyside6 PCM2.py
 
     - name: Upload executable
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: PCM2-executable
         path: PCM2.exe
