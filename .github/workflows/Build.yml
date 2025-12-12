@@ -19,6 +19,14 @@ jobs:
       with:
         python-version: '3.11'
 
+    - name: Cache pip
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
     - name: Upgrade pip
       run: python -m pip install --upgrade pip
 
@@ -28,13 +36,9 @@ jobs:
         pip install pyside6
         pip install pillow
 
-    - name: Install MinGW (for Nuitka)
-      run: choco install mingw -y
-      shell: powershell
-
     - name: Compile PCM2.py with Nuitka
       run: |
-        python -m nuitka --standalone --onefile --windows-console-mode=disable --mingw64 --lto=yes --enable-plugin=pyside6 PCM2.py
+        python -m nuitka --standalone --onefile --windows-console-mode=disable --mingw64 --lto=yes --enable-plugin=pyside6 --assume-yes-for-downloads PCM2.py
 
     - name: Upload executable
       uses: actions/upload-artifact@v4
