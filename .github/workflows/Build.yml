@@ -25,18 +25,17 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Prepare pip cache directory (shared)
+      - name: Prepare pip cache directory
         shell: pwsh
         run: |
           $cache = Join-Path $env:RUNNER_TEMP "pip_cache"
           New-Item -ItemType Directory -Force -Path $cache | Out-Null
           Write-Host "PIP_CACHE_DIR=$cache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "Created pip cache dir: $cache"
 
       - name: Restore pip cache
         uses: actions/cache@v4
@@ -46,36 +45,34 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-${{ env.PYTHON_VERSION }}-
 
-      - name: Install build dependencies (with pip cache)
+      - name: Install dependencies (cached)
         shell: pwsh
         run: |
           $cache = Join-Path $env:RUNNER_TEMP "pip_cache"
           python -m pip install --upgrade pip setuptools wheel
-          # اگر می‌خواهی نسخهٔ Nuitka را سنجاق کنم، pip install nuitka==X.Y.Z را اینجا قرار بده
           pip install --cache-dir "$cache" nuitka PySide6 pillow img2pdf PyMuPDF pypdf patool
           if ($LASTEXITCODE -ne 0) {
             Write-Error "pip install failed with exit code $LASTEXITCODE"
             exit $LASTEXITCODE
           }
-          Write-Host "Dependencies installed."
 
-      - name: Verify required files exist
+      - name: Verify required files
         shell: pwsh
         run: |
           if (-not (Test-Path $env:SCRIPT)) {
-            Write-Error "Script file '$($env:SCRIPT)' not found in repository root."
+            Write-Error "Script file '$($env:SCRIPT)' not found."
             exit 1
           }
           if (-not (Test-Path $env:ICON_PNG)) {
-            Write-Error "Icon file '$($env:ICON_PNG)' not found in repository root."
+            Write-Error "Icon file '$($env:ICON_PNG)' not found."
             exit 1
           }
-          Write-Host "Verified presence of script and icon."
+          Write-Host "Found required files."
 
-      - name: Fix/normalize PNG and create ICO (PowerShell-safe)
+      - name: Normalize PNG and create ICO (PowerShell-safe)
         shell: pwsh
         run: |
-          $pyFile = Join-Path $env:TEMP "make_icon.py"
+          $pyFile = Join-Path $env:TEMP "ci_make_icon.py"
           @"
 from PIL import Image
 import os, sys
@@ -88,7 +85,7 @@ if not os.path.exists(src):
     sys.exit(2)
 
 try:
-    im = Image.open(src).convert("RGBA")
+    im = Image.open(src).convert('RGBA')
 except Exception as e:
     print(f'Error opening image {src}: {e}', file=sys.stderr)
     sys.exit(3)
@@ -101,7 +98,7 @@ if max(w,h) > max_side:
     w,h = im.size
 
 size = max(w,h)
-square = Image.new("RGBA",(size,size),(0,0,0,0))
+square = Image.new('RGBA',(size,size),(0,0,0,0))
 square.paste(im, ((size-w)//2, (size-h)//2), im)
 
 sizes = [(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)]
@@ -112,49 +109,44 @@ except Exception as e:
     print(f'Failed to save ICO {out}: {e}', file=sys.stderr)
     sys.exit(4)
 "@ | Out-File -Encoding UTF8 $pyFile
-
           python $pyFile
           if ($LASTEXITCODE -ne 0) {
             Write-Error "Icon generation failed with code $LASTEXITCODE"
             exit $LASTEXITCODE
           }
-          Write-Host "Icon generation succeeded."
 
-      - name: Check Python & Nuitka versions (sanity)
+      - name: Sanity: Python & Nuitka versions
         shell: pwsh
         run: |
           python --version
-          python -m pip show nuitka || Write-Host "nuitka not found in pip list"
-          python -m nuitka --version || Write-Host "nuitka version info unavailable"
+          python -m pip show nuitka || Write-Host "nuitka not installed"
+          python -m nuitka --version || Write-Host "nuitka --version unavailable"
 
-      - name: Detect available compiler (MSVC) or install MinGW fallback
+      - name: Detect compiler (MSVC) or set MinGW fallback
         id: detect_compiler
         shell: pwsh
         run: |
           $compilerFlag = ""
-          # vswhere path (ProgramFiles(x86) must be referenced with quotes)
           $pf86 = $env:'ProgramFiles(x86)'
           $vswhere = Join-Path $pf86 "Microsoft Visual Studio\Installer\vswhere.exe"
           if (Test-Path $vswhere) {
             try {
               $installationPath = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -property installationPath 2>$null
               if ($installationPath) {
-                Write-Host "Visual Studio installation detected: $installationPath"
-                $compilerFlag="--msvc=latest"
+                Write-Host "Visual Studio detected: $installationPath"
+                $compilerFlag = "--msvc=latest"
               }
             } catch {
               Write-Host "vswhere check failed: $_"
             }
           }
           if (-not $compilerFlag) {
-            Write-Host "MSVC not detected. Attempting MinGW (choco) fallback..."
-            choco install -y mingw || Write-Host "choco install mingw returned code $LASTEXITCODE"
-            $compilerFlag="--mingw64"
+            Write-Host "MSVC not detected. Will use --mingw64 (Nuitka can download MinGW) as fallback."
+            $compilerFlag = "--mingw64"
           }
           Write-Host "NUITKA_COMPILER=$compilerFlag" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "Using compiler flag: $compilerFlag"
 
-      - name: Compile with Nuitka (retries, timeout per attempt, verbose logs)
+      - name: Compile with Nuitka (retries, timeout, logs)
         shell: pwsh
         env:
           DIST_DIR: ${{ env.DIST_DIR }}
@@ -168,7 +160,7 @@ except Exception as e:
           if ($env:NUMBER_OF_PROCESSORS) { $jobs = [int]$env:NUMBER_OF_PROCESSORS }
 
           $compiler = $env:NUITKA_COMPILER
-          if (-not $compiler) { $compiler="--msvc=latest" }
+          if (-not $compiler) { $compiler = "--msvc=latest" }
 
           $baseArgs = @(
             "--standalone",
@@ -187,18 +179,18 @@ except Exception as e:
 
           $maxAttempts = 2
           $attempt = 1
-          $timeoutMs = 20 * 60 * 1000  # 20 minutes per attempt
+          $timeoutMs = 20 * 60 * 1000
 
           while ($attempt -le $maxAttempts) {
-            Write-Host "==== Nuitka attempt $attempt of $maxAttempts ===="
+            Write-Host "Nuitka attempt $attempt of $maxAttempts"
             $stdoutLog = Join-Path $dist "nuitka_stdout_attempt${attempt}.log"
             $stderrLog = Join-Path $dist "nuitka_stderr_attempt${attempt}.log"
-
             $argsForStart = @("-m","nuitka") + $baseArgs
+
             $proc = Start-Process -FilePath "python" -ArgumentList $argsForStart -NoNewWindow -PassThru -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
 
             if (-not $proc.WaitForExit($timeoutMs)) {
-              Write-Host "Timeout reached for attempt $attempt. Killing process..."
+              Write-Host "Timeout reached. Killing process..."
               $proc | Stop-Process -Force -ErrorAction SilentlyContinue
               $exitCode = 1
             } else {
@@ -206,39 +198,36 @@ except Exception as e:
             }
 
             Write-Host "Attempt $attempt exit code: $exitCode"
-            Write-Host "Stdout log: $stdoutLog"
-            Write-Host "Stderr log: $stderrLog"
+            Write-Host "Stdout: $stdoutLog"
+            Write-Host "Stderr: $stderrLog"
 
             if ($exitCode -eq 0) {
               Write-Host "Nuitka succeeded on attempt $attempt"
               break
+            } elseif ($attempt -lt $maxAttempts) {
+              Write-Host "Retrying after short delay..."
+              Start-Sleep -Seconds 6
+              Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$dist\*"
             } else {
-              Write-Host "Nuitka failed on attempt $attempt"
-              if ($attempt -lt $maxAttempts) {
-                Write-Host "Retrying after short wait..."
-                Start-Sleep -Seconds 6
-                Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$dist\*"
-              } else {
-                Write-Error "Nuitka failed after $maxAttempts attempts. Check logs in $dist"
-                exit $exitCode
-              }
+              Write-Error "Nuitka failed after $maxAttempts attempts. Check logs in $dist"
+              exit $exitCode
             }
             $attempt++
           }
 
-      - name: Show dist contents (for debugging)
+      - name: Show dist contents
         shell: pwsh
         run: |
-          Write-Host "Contents of dist folder:"
+          Write-Host "dist contents:"
           Get-ChildItem -Path "$env:DIST_DIR" -Recurse | ForEach-Object { Write-Host $_.FullName }
 
-      - name: Rename EXE to final name
+      - name: Rename/copy EXE to final name
         shell: pwsh
         run: |
           $dist = "$env:DIST_DIR"
-          $target = Join-Path $dist "${{ env.EXE_NAME }}"
           $exe = Get-ChildItem -Path $dist -Filter *.exe -File -Recurse | Select-Object -First 1
           if (-not $exe) { Write-Error "No exe found in $dist"; exit 1 }
+          $target = Join-Path $dist "${{ env.EXE_NAME }}"
           Copy-Item -Path $exe.FullName -Destination $target -Force
           Write-Host "Copied $($exe.Name) -> $target"
 
@@ -248,7 +237,7 @@ except Exception as e:
           name: SainoCOC-Windows
           path: ${{ env.DIST_DIR }}/**
 
-      - name: Upload build logs (always)
+      - name: Upload logs (always)
         if: always()
         uses: actions/upload-artifact@v4
         with:
