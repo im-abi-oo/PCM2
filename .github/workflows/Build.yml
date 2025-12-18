@@ -29,7 +29,7 @@ jobs:
       uses: Nuitka/Nuitka-Action@main
       with:
         nuitka-version: main
-        script-name: main.py
+        script-name: PCM2.py
         standalone: true
         onefile: true
         enable-plugins: pyside6
