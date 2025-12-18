@@ -5,23 +5,31 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 env:
   PYTHON_VERSION: '3.11'
-  SCRIPT: 'PCM2.py'                   # <-- اسم فایل پایتون ورودی (مطمئن شو همین اسم در ریپو هست)
-  ICON_PNG: 'ICON.PNG'                # <-- آیکون PNG که توی ریپو قرار میدی
-  ICON_ICO: 'icon_for_nuitka.ico'     # <-- فایل .ico ای که از PNG ساخته میشه
-  EXE_NAME: 'Saino COC.exe'           # <-- اسم نهایی EXE که میخوای
+  SCRIPT: 'PCM2.py'
+  ICON_PNG: 'ICON.PNG'
+  ICON_ICO: 'icon_for_nuitka.ico'
+  EXE_NAME: 'Saino COC.exe'
   DIST_DIR: 'dist'
 
 jobs:
   build-windows:
     runs-on: windows-latest
+
     steps:
-    - name: Checkout repository
+    - name: Checkout repository (safe & minimal)
       uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+        token: ${{ secrets.GITHUB_TOKEN }}
+        persist-credentials: false
 
     - name: Setup Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: ${{ env.PYTHON_VERSION }}
 
@@ -36,61 +44,57 @@ jobs:
     - name: Ensure source files exist
       shell: powershell
       run: |
-        if (-not (Test-Path -Path $env:SCRIPT)) { Write-Error "Missing $env:SCRIPT in repo root"; exit 1 }
-        if (-not (Test-Path -Path $env:ICON_PNG)) { Write-Error "Missing $env:ICON_PNG in repo root"; exit 1 }
-        Write-Output "Found $env:SCRIPT and $env:ICON_PNG"
+        if (-not (Test-Path $env:SCRIPT)) { Write-Error "Missing $env:SCRIPT"; exit 1 }
+        if (-not (Test-Path $env:ICON_PNG)) { Write-Error "Missing $env:ICON_PNG"; exit 1 }
+        Write-Output "Source files OK"
 
-    - name: Install build dependencies (Nuitka, PySide6, Pillow, extras)
+    - name: Install build dependencies
       shell: powershell
       run: |
         python -m pip install --upgrade pip setuptools wheel
         pip install --upgrade nuitka
-        pip install "PySide6"
-        pip install pillow img2pdf PyMuPDF pypdf patool
+        pip install PySide6 pillow img2pdf PyMuPDF pypdf patool
 
-    - name: Create .ico from ICON.PNG (Pillow)
+    - name: Create ICO from PNG
       shell: powershell
       run: |
         python - <<'PY'
         from PIL import Image
-        import sys
         png = r"${{ env.ICON_PNG }}"
         ico = r"${{ env.ICON_ICO }}"
         img = Image.open(png)
-        # ensure reasonable icon sizes (Nuitka / Windows use common sizes). We produce multi-size icon.
-        sizes = [(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)]
-        # convert to RGBA if necessary
-        if img.mode not in ("RGBA","RGB"):
+        if img.mode not in ("RGB", "RGBA"):
             img = img.convert("RGBA")
-        img.save(ico, format='ICO', sizes=sizes)
-        print("Saved ICO:", ico)
+        sizes = [(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)]
+        img.save(ico, format="ICO", sizes=sizes)
+        print("ICO created:", ico)
         PY
 
-    - name: Optionally force app name inside source to 'Saino COC'
-      # This step replaces any "app_name": "..." in the source with "Saino COC"
+    - name: Force app_name to Saino COC (optional patch)
       shell: powershell
       run: |
-        $file = Get-Item -Path $env:SCRIPT
-        $txt = Get-Content -Raw -LiteralPath $file.FullName
-        # regex replace occurrences like "app_name": "something"
-        $new = [regex]::Replace($txt, '("app_name"\s*:\s*)"(.*?)"', '$1"Saino COC"')
-        if ($new -ne $txt) {
-          Set-Content -LiteralPath $file.FullName -Value $new -Encoding UTF8
-          Write-Output "Patched app_name in $($file.Name) -> Saino COC"
+        $p = Get-Item $env:SCRIPT
+        $t = Get-Content -Raw $p.FullName
+        $n = [regex]::Replace($t,'("app_name"\s*:\s*)"(.*?)"','$1"Saino COC"')
+        if ($n -ne $t) {
+          Set-Content $p.FullName $n -Encoding UTF8
+          Write-Output "app_name patched"
         } else {
-          Write-Output "No app_name key found (or already set)."
+          Write-Output "no app_name field found"
         }
 
-    - name: Show Python & Nuitka versions
+    - name: Show versions
       shell: powershell
       run: |
         python --version
-        python -c "import nuitka, sys; print('nuitka', getattr(nuitka,'__version__', 'unknown'))"
+        python -c "import nuitka; print('nuitka', nuitka.__version__)"
 
-    - name: Compile PCM2.py with Nuitka (standalone, onefile) 
+    - name: Compile with Nuitka (onefile)
       shell: powershell
       run: |
-        if (!(Test-Path -Path $env:DIST_DIR)) { New-Item -ItemType Directory -Path $env:DIST_DIR | Out-Null }
+        if (!(Test-Path $env:DIST_DIR)) {
+          New-Item -ItemType Directory -Path $env:DIST_DIR | Out-Null
+        }
         python -m nuitka `
           --standalone `
           --onefile `
@@ -99,24 +103,20 @@ jobs:
           --windows-disable-console `
           --windows-icon-from-ico=$env:ICON_ICO `
           --assume-yes-for-downloads `
-          --output-dir=%DIST_DIR% `
+          --output-dir=$env:DIST_DIR `
           $env:SCRIPT
 
-    - name: Locate produced exe and rename/copy to desired name
+    - name: Rename final EXE
       shell: powershell
       run: |
-        $exe = Get-ChildItem -Path $env:DIST_DIR -Filter *.exe -Recurse | Select-Object -First 1
-        if ($null -eq $exe) {
-          Write-Error "No EXE found in $env:DIST_DIR. Build probably failed."
-          exit 1
-        }
-        $dest = Join-Path -Path $env:DIST_DIR -ChildPath $env:EXE_NAME
-        Copy-Item -Path $exe.FullName -Destination $dest -Force
-        Write-Output "Produced EXE: $dest"
-        Get-ChildItem -Path $env:DIST_DIR -File | ForEach-Object { Write-Output $_.Name }
+        $exe = Get-ChildItem $env:DIST_DIR -Filter *.exe -Recurse | Select-Object -First 1
+        if (!$exe) { Write-Error "EXE not found"; exit 1 }
+        $dest = Join-Path $env:DIST_DIR $env:EXE_NAME
+        Copy-Item $exe.FullName $dest -Force
+        Write-Output "Final EXE: $dest"
 
-    - name: Upload dist folder (includes final EXE)
+    - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: SainoCOC-build
+        name: SainoCOC-Windows
         path: ${{ env.DIST_DIR }}/**
