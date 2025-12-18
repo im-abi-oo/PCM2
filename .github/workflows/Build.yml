@@ -21,7 +21,7 @@ jobs:
     runs-on: windows-latest
 
     steps:
-    - name: Checkout repository (stable)
+    - name: Checkout repository
       uses: actions/checkout@v4
       with:
         fetch-depth: 1
@@ -33,83 +33,49 @@ jobs:
       with:
         python-version: ${{ env.PYTHON_VERSION }}
 
-    - name: Cache pip
-      uses: actions/cache@v4
-      with:
-        path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-        restore-keys: |
-          ${{ runner.os }}-pip-
+    - name: Install dependencies
+      shell: powershell
+      run: |
+        python -m pip install --upgrade pip setuptools wheel
+        pip install nuitka PySide6 pillow img2pdf PyMuPDF pypdf patool
 
-    - name: Verify required files
+    - name: Verify files
       shell: powershell
       run: |
         if (!(Test-Path $env:SCRIPT)) { Write-Error "Missing $env:SCRIPT"; exit 1 }
         if (!(Test-Path $env:ICON_PNG)) { Write-Error "Missing $env:ICON_PNG"; exit 1 }
-        Write-Output "Required files found"
 
-    - name: Install Python build dependencies
+    - name: Create ICO from PNG
       shell: powershell
       run: |
-        python -m pip install --upgrade pip setuptools wheel
-        pip install --upgrade nuitka
-        pip install PySide6 pillow img2pdf PyMuPDF pypdf patool
-
-    - name: Create ICO from PNG (PowerShell-safe)
-      shell: powershell
-      run: |
-        $code = @'
+        $py = @'
 from PIL import Image
-
 png = r"${{ env.ICON_PNG }}"
 ico = r"${{ env.ICON_ICO }}"
-
 img = Image.open(png)
-if img.mode not in ("RGB", "RGBA"):
+if img.mode not in ("RGB","RGBA"):
     img = img.convert("RGBA")
-
-sizes = [(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)]
+sizes=[(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)]
 img.save(ico, format="ICO", sizes=sizes)
-
 print("ICO created:", ico)
 '@
-        Set-Content -Path make_icon.py -Value $code -Encoding UTF8
+        Set-Content make_icon.py $py -Encoding UTF8
         python make_icon.py
 
-    - name: Force app_name to Saino COC (optional patch)
+    - name: Patch app_name (safe)
       shell: powershell
       run: |
-        $file = Get-Item $env:SCRIPT
-        $text = Get-Content -Raw $file.FullName
-        $patched = [regex]::Replace(
-          $text,
-          '("app_name"\s*:\s*)"(.*?)"',
-          '$1"Saino COC"'
-        )
-        if ($patched -ne $text) {
-          Set-Content $file.FullName $patched -Encoding UTF8
-          Write-Output "app_name patched"
-        } else {
-          Write-Output "No app_name field found"
-        }
+        $t = Get-Content -Raw $env:SCRIPT
+        $n = [regex]::Replace($t,'("app_name"\s*:\s*)"(.*?)"','$1"Saino COC"')
+        if ($n -ne $t) { Set-Content $env:SCRIPT $n -Encoding UTF8 }
 
-    - name: Show tool versions
+    - name: Compile with Nuitka
       shell: powershell
       run: |
-        python --version
-        python -c "import nuitka; print('nuitka', nuitka.__version__)"
-
-    - name: Compile with Nuitka (onefile EXE)
-      shell: powershell
-      run: |
-        if (!(Test-Path $env:DIST_DIR)) {
-          New-Item -ItemType Directory -Path $env:DIST_DIR | Out-Null
-        }
-
+        if (!(Test-Path $env:DIST_DIR)) { New-Item -ItemType Directory $env:DIST_DIR | Out-Null }
         python -m nuitka `
           --standalone `
           --onefile `
-          --lto=yes `
           --enable-plugin=pyside6 `
           --windows-disable-console `
           --windows-icon-from-ico=$env:ICON_ICO `
@@ -117,17 +83,15 @@ print("ICO created:", ico)
           --output-dir=$env:DIST_DIR `
           $env:SCRIPT
 
-    - name: Rename final EXE
+    - name: Rename EXE
       shell: powershell
       run: |
         $exe = Get-ChildItem $env:DIST_DIR -Filter *.exe -Recurse | Select-Object -First 1
         if (!$exe) { Write-Error "EXE not found"; exit 1 }
-        $dest = Join-Path $env:DIST_DIR $env:EXE_NAME
-        Copy-Item $exe.FullName $dest -Force
-        Write-Output "Final EXE created: $dest"
+        Copy-Item $exe.FullName (Join-Path $env:DIST_DIR $env:EXE_NAME) -Force
 
-    - name: Upload build artifact
+    - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: SainoCOC-Windows
-        path: ${{ env.DIST_DIR }}/**
+        path: dist/**
