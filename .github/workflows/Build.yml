@@ -49,10 +49,15 @@ jobs:
       - name: Install build dependencies (with pip cache)
         shell: pwsh
         run: |
-          $cache = "$env:RUNNER_TEMP\pip_cache"
+          $cache = Join-Path $env:RUNNER_TEMP "pip_cache"
           python -m pip install --upgrade pip setuptools wheel
-          pip install --cache-dir "$cache" nuitka PySide6 pillow img2pdf PyMuPDF pypdf patool || exit $LASTEXITCODE
-          Write-Host "Dependencies installed (or failed with code $LASTEXITCODE)"
+          # اگر می‌خواهی نسخهٔ Nuitka را سنجاق کنم، pip install nuitka==X.Y.Z را اینجا قرار بده
+          pip install --cache-dir "$cache" nuitka PySide6 pillow img2pdf PyMuPDF pypdf patool
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "pip install failed with exit code $LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
+          Write-Host "Dependencies installed."
 
       - name: Verify required files exist
         shell: pwsh
@@ -109,7 +114,10 @@ except Exception as e:
 "@ | Out-File -Encoding UTF8 $pyFile
 
           python $pyFile
-          if ($LASTEXITCODE -ne 0) { Write-Error "Icon generation failed with code $LASTEXITCODE"; exit $LASTEXITCODE }
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Icon generation failed with code $LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
           Write-Host "Icon generation succeeded."
 
       - name: Check Python & Nuitka versions (sanity)
@@ -124,7 +132,9 @@ except Exception as e:
         shell: pwsh
         run: |
           $compilerFlag = ""
-          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          # vswhere path (ProgramFiles(x86) must be referenced with quotes)
+          $pf86 = $env:'ProgramFiles(x86)'
+          $vswhere = Join-Path $pf86 "Microsoft Visual Studio\Installer\vswhere.exe"
           if (Test-Path $vswhere) {
             try {
               $installationPath = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -property installationPath 2>$null
@@ -139,10 +149,8 @@ except Exception as e:
           if (-not $compilerFlag) {
             Write-Host "MSVC not detected. Attempting MinGW (choco) fallback..."
             choco install -y mingw || Write-Host "choco install mingw returned code $LASTEXITCODE"
-            # If choco not available or install fails, Nuitka will still be run with --assume-yes-for-downloads
             $compilerFlag="--mingw64"
           }
-          # export compiler flag into env for later steps
           Write-Host "NUITKA_COMPILER=$compilerFlag" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "Using compiler flag: $compilerFlag"
 
@@ -187,7 +195,6 @@ except Exception as e:
             $stderrLog = Join-Path $dist "nuitka_stderr_attempt${attempt}.log"
 
             $argsForStart = @("-m","nuitka") + $baseArgs
-            # Start process with redirected stdout/stderr
             $proc = Start-Process -FilePath "python" -ArgumentList $argsForStart -NoNewWindow -PassThru -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
 
             if (-not $proc.WaitForExit($timeoutMs)) {
@@ -210,7 +217,7 @@ except Exception as e:
               if ($attempt -lt $maxAttempts) {
                 Write-Host "Retrying after short wait..."
                 Start-Sleep -Seconds 6
-                Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$dist\*" 
+                Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$dist\*"
               } else {
                 Write-Error "Nuitka failed after $maxAttempts attempts. Check logs in $dist"
                 exit $exitCode
