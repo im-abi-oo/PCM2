@@ -1,95 +1,48 @@
-name: Build Saino COC (Windows)
+name: Build Saino COC Ultimate (Nuitka)
 
 on:
   push:
-    branches: [ main ]
+    branches: [ "main" ]
   workflow_dispatch:
 
-permissions:
-  contents: read
-
-env:
-  PYTHON_VERSION: "3.11"
-  SCRIPT: "PCM2.py"
-  ICON_PNG: "ICON.PNG"
-  ICON_ICO: "icon_for_nuitka.ico"
-  EXE_NAME: "Saino COC.exe"
-  DIST_DIR: "dist"
-
 jobs:
-  build-windows:
+  build:
     runs-on: windows-latest
-    timeout-minutes: 90
-
+    
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    - name: Checkout Code
+      uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11' # 3.11 is very stable with Nuitka
+        architecture: 'x64'
 
-      - name: Install dependencies
-        shell: cmd
-        run: |
-          python -m pip install --upgrade pip setuptools wheel
-          pip install nuitka PySide6 pillow img2pdf PyMuPDF pypdf patool
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyside6 Pillow img2pdf patool pymupdf nuitka zstandard
 
-      - name: Verify required files
-        shell: cmd
-        run: |
-          if not exist %SCRIPT% exit /b 1
-          if not exist %ICON_PNG% exit /b 1
-          echo Verified required files.
-
-      - name: Normalize PNG and create ICO
-        shell: cmd
-        run: |
-          set "PYFILE=%TEMP%\make_icon.py"
-          (
-          echo from PIL import Image
-          echo import os, sys
-          echo src = os.environ.get("ICON_PNG","ICON.PNG")
-          echo out = os.environ.get("ICON_ICO","icon_for_nuitka.ico")
-          echo if not os.path.exists(src): sys.exit(2)
-          echo im = Image.open(src).convert("RGBA")
-          echo max_side = 1024
-          echo w,h = im.size
-          echo if max(w,h) > max_side:
-          echo.    scale = max_side / max(w,h)
-          echo.    im = im.resize((int(w*scale), int(h*scale)), Image.LANCZOS)
-          echo w,h = im.size
-          echo size = max(w,h)
-          echo square = Image.new("RGBA",(size,size),(0,0,0,0))
-          echo square.paste(im, ((size-w)//2, (size-h)//2), im)
-          echo sizes = [(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)]
-          echo square.save(out, format="ICO", sizes=sizes)
-          echo print("Saved ICO:", out)
-          ) > %PYFILE%
-          python %PYFILE%
-
-      - name: Compile with Nuitka
-        shell: cmd
-        run: |
-          if not exist %DIST_DIR% mkdir %DIST_DIR%
-          python -m nuitka ^
-            --standalone ^
-            --onefile ^
-            --enable-plugin=pyside6 ^
-            --windows-disable-console ^
-            --windows-icon-from-ico=%ICON_ICO% ^
-            --assume-yes-for-downloads ^
-            --output-dir=%DIST_DIR% ^
-            %SCRIPT%
-
-      - name: Rename EXE
-        shell: cmd
-        run: |
-          for %%f in (%DIST_DIR%\*.exe) do copy "%%f" "%DIST_DIR%\%EXE_NAME%" /Y
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: SainoCOC-Windows
-          path: %DIST_DIR%\**
+    - name: Build with Nuitka
+      # This uses the official Nuitka action which handles setup and caching automatically
+      uses: Nuitka/Nuitka-Action@main
+      with:
+        nuitka-version: main
+        script-name: PCM2.py
+        standalone: true
+        onefile: true
+        enable-plugins: pyside6
+        windows-console-mode: disable
+        windows-icon-from-ico: https://raw.githubusercontent.com/python/cpython/main/PC/icons/python.ico
+        # Above line is a placeholder icon, remove or change to local path if you have one
+        output-file: Saino_COC_Ultimate.exe
+        include-package: shutil
+        include-package: zipfile
+        include-package: json
+        
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: Saino-COC-Ultimate-Build
+        path: build/Saino_COC_Ultimate.exe
