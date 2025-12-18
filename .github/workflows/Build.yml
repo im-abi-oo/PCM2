@@ -25,221 +25,71 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Prepare pip cache directory
-        shell: pwsh
+      - name: Install dependencies
+        shell: cmd
         run: |
-          $cache = Join-Path $env:RUNNER_TEMP "pip_cache"
-          New-Item -ItemType Directory -Force -Path $cache | Out-Null
-          Write-Host "PIP_CACHE_DIR=$cache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Restore pip cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/pip_cache
-          key: ${{ runner.os }}-pip-${{ env.PYTHON_VERSION }}-v1
-          restore-keys: |
-            ${{ runner.os }}-pip-${{ env.PYTHON_VERSION }}-
-
-      - name: Install dependencies (cached)
-        shell: pwsh
-        run: |
-          $cache = Join-Path $env:RUNNER_TEMP "pip_cache"
           python -m pip install --upgrade pip setuptools wheel
-          pip install --cache-dir "$cache" nuitka PySide6 pillow img2pdf PyMuPDF pypdf patool
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "pip install failed with exit code $LASTEXITCODE"
-            exit $LASTEXITCODE
-          }
+          pip install nuitka PySide6 pillow img2pdf PyMuPDF pypdf patool
 
       - name: Verify required files
-        shell: pwsh
+        shell: cmd
         run: |
-          if (-not (Test-Path $env:SCRIPT)) {
-            Write-Error "Script file '$($env:SCRIPT)' not found."
-            exit 1
-          }
-          if (-not (Test-Path $env:ICON_PNG)) {
-            Write-Error "Icon file '$($env:ICON_PNG)' not found."
-            exit 1
-          }
-          Write-Host "Found required files."
+          if not exist %SCRIPT% exit /b 1
+          if not exist %ICON_PNG% exit /b 1
+          echo Verified required files.
 
-      - name: Normalize PNG and create ICO (PowerShell-safe)
-        shell: pwsh
+      - name: Normalize PNG and create ICO
+        shell: cmd
         run: |
-          $pyFile = Join-Path $env:TEMP "ci_make_icon.py"
-          @"
-from PIL import Image
-import os, sys
+          set "PYFILE=%TEMP%\make_icon.py"
+          (
+          echo from PIL import Image
+          echo import os, sys
+          echo src = os.environ.get("ICON_PNG","ICON.PNG")
+          echo out = os.environ.get("ICON_ICO","icon_for_nuitka.ico")
+          echo if not os.path.exists(src): sys.exit(2)
+          echo im = Image.open(src).convert("RGBA")
+          echo max_side = 1024
+          echo w,h = im.size
+          echo if max(w,h) > max_side:
+          echo.    scale = max_side / max(w,h)
+          echo.    im = im.resize((int(w*scale), int(h*scale)), Image.LANCZOS)
+          echo w,h = im.size
+          echo size = max(w,h)
+          echo square = Image.new("RGBA",(size,size),(0,0,0,0))
+          echo square.paste(im, ((size-w)//2, (size-h)//2), im)
+          echo sizes = [(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)]
+          echo square.save(out, format="ICO", sizes=sizes)
+          echo print("Saved ICO:", out)
+          ) > %PYFILE%
+          python %PYFILE%
 
-src = os.environ.get('ICON_PNG','ICON.PNG')
-out = os.environ.get('ICON_ICO','icon_for_nuitka.ico')
-
-if not os.path.exists(src):
-    print(f'ICON source not found: {src}', file=sys.stderr)
-    sys.exit(2)
-
-try:
-    im = Image.open(src).convert('RGBA')
-except Exception as e:
-    print(f'Error opening image {src}: {e}', file=sys.stderr)
-    sys.exit(3)
-
-max_side = 1024
-w,h = im.size
-if max(w,h) > max_side:
-    scale = max_side / max(w,h)
-    im = im.resize((int(w*scale), int(h*scale)), Image.LANCZOS)
-    w,h = im.size
-
-size = max(w,h)
-square = Image.new('RGBA',(size,size),(0,0,0,0))
-square.paste(im, ((size-w)//2, (size-h)//2), im)
-
-sizes = [(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)]
-try:
-    square.save(out, format='ICO', sizes=sizes)
-    print('Saved ICO:', out)
-except Exception as e:
-    print(f'Failed to save ICO {out}: {e}', file=sys.stderr)
-    sys.exit(4)
-"@ | Out-File -Encoding UTF8 $pyFile
-          python $pyFile
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "Icon generation failed with code $LASTEXITCODE"
-            exit $LASTEXITCODE
-          }
-
-      - name: Sanity: Python & Nuitka versions
-        shell: pwsh
+      - name: Compile with Nuitka
+        shell: cmd
         run: |
-          python --version
-          python -m pip show nuitka || Write-Host "nuitka not installed"
-          python -m nuitka --version || Write-Host "nuitka --version unavailable"
+          if not exist %DIST_DIR% mkdir %DIST_DIR%
+          python -m nuitka ^
+            --standalone ^
+            --onefile ^
+            --enable-plugin=pyside6 ^
+            --windows-disable-console ^
+            --windows-icon-from-ico=%ICON_ICO% ^
+            --assume-yes-for-downloads ^
+            --output-dir=%DIST_DIR% ^
+            %SCRIPT%
 
-      - name: Detect compiler (MSVC) or set MinGW fallback
-        id: detect_compiler
-        shell: pwsh
+      - name: Rename EXE
+        shell: cmd
         run: |
-          $compilerFlag = ""
-          $pf86 = $env:'ProgramFiles(x86)'
-          $vswhere = Join-Path $pf86 "Microsoft Visual Studio\Installer\vswhere.exe"
-          if (Test-Path $vswhere) {
-            try {
-              $installationPath = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -property installationPath 2>$null
-              if ($installationPath) {
-                Write-Host "Visual Studio detected: $installationPath"
-                $compilerFlag = "--msvc=latest"
-              }
-            } catch {
-              Write-Host "vswhere check failed: $_"
-            }
-          }
-          if (-not $compilerFlag) {
-            Write-Host "MSVC not detected. Will use --mingw64 (Nuitka can download MinGW) as fallback."
-            $compilerFlag = "--mingw64"
-          }
-          Write-Host "NUITKA_COMPILER=$compilerFlag" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          for %%f in (%DIST_DIR%\*.exe) do copy "%%f" "%DIST_DIR%\%EXE_NAME%" /Y
 
-      - name: Compile with Nuitka (retries, timeout, logs)
-        shell: pwsh
-        env:
-          DIST_DIR: ${{ env.DIST_DIR }}
-          ICON_ICO: ${{ env.ICON_ICO }}
-          SCRIPT: ${{ env.SCRIPT }}
-        run: |
-          $dist = "$env:DIST_DIR"
-          if (-not (Test-Path $dist)) { New-Item -ItemType Directory -Path $dist | Out-Null }
-
-          $jobs = 1
-          if ($env:NUMBER_OF_PROCESSORS) { $jobs = [int]$env:NUMBER_OF_PROCESSORS }
-
-          $compiler = $env:NUITKA_COMPILER
-          if (-not $compiler) { $compiler = "--msvc=latest" }
-
-          $baseArgs = @(
-            "--standalone",
-            "--onefile",
-            "--enable-plugin=pyside6",
-            "--windows-disable-console",
-            "--windows-icon-from-ico=$env:ICON_ICO",
-            "--assume-yes-for-downloads",
-            "--show-progress",
-            "--show-scons",
-            "--output-dir=$dist"
-          )
-          if ($jobs -gt 1) { $baseArgs += "--jobs=$jobs" }
-          $baseArgs += $compiler
-          $baseArgs += $env:SCRIPT
-
-          $maxAttempts = 2
-          $attempt = 1
-          $timeoutMs = 20 * 60 * 1000
-
-          while ($attempt -le $maxAttempts) {
-            Write-Host "Nuitka attempt $attempt of $maxAttempts"
-            $stdoutLog = Join-Path $dist "nuitka_stdout_attempt${attempt}.log"
-            $stderrLog = Join-Path $dist "nuitka_stderr_attempt${attempt}.log"
-            $argsForStart = @("-m","nuitka") + $baseArgs
-
-            $proc = Start-Process -FilePath "python" -ArgumentList $argsForStart -NoNewWindow -PassThru -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
-
-            if (-not $proc.WaitForExit($timeoutMs)) {
-              Write-Host "Timeout reached. Killing process..."
-              $proc | Stop-Process -Force -ErrorAction SilentlyContinue
-              $exitCode = 1
-            } else {
-              $exitCode = $proc.ExitCode
-            }
-
-            Write-Host "Attempt $attempt exit code: $exitCode"
-            Write-Host "Stdout: $stdoutLog"
-            Write-Host "Stderr: $stderrLog"
-
-            if ($exitCode -eq 0) {
-              Write-Host "Nuitka succeeded on attempt $attempt"
-              break
-            } elseif ($attempt -lt $maxAttempts) {
-              Write-Host "Retrying after short delay..."
-              Start-Sleep -Seconds 6
-              Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$dist\*"
-            } else {
-              Write-Error "Nuitka failed after $maxAttempts attempts. Check logs in $dist"
-              exit $exitCode
-            }
-            $attempt++
-          }
-
-      - name: Show dist contents
-        shell: pwsh
-        run: |
-          Write-Host "dist contents:"
-          Get-ChildItem -Path "$env:DIST_DIR" -Recurse | ForEach-Object { Write-Host $_.FullName }
-
-      - name: Rename/copy EXE to final name
-        shell: pwsh
-        run: |
-          $dist = "$env:DIST_DIR"
-          $exe = Get-ChildItem -Path $dist -Filter *.exe -File -Recurse | Select-Object -First 1
-          if (-not $exe) { Write-Error "No exe found in $dist"; exit 1 }
-          $target = Join-Path $dist "${{ env.EXE_NAME }}"
-          Copy-Item -Path $exe.FullName -Destination $target -Force
-          Write-Host "Copied $($exe.Name) -> $target"
-
-      - name: Upload artifact (build)
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: SainoCOC-Windows
-          path: ${{ env.DIST_DIR }}/**
-
-      - name: Upload logs (always)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: nuitka-logs
-          path: ${{ env.DIST_DIR }}/*.log
+          path: %DIST_DIR%\**
