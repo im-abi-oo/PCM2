@@ -1,72 +1,45 @@
-name: Build Saino COC (Windows)
+name: Build PCM2.exe
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
   workflow_dispatch:
-
-permissions:
-  contents: read
-
-env:
-  PYTHON_VERSION: "3.11"
-  SCRIPT: "PCM2.py"
-  ICON_PNG: "ICON.PNG"
-  ICON_ICO: "icon_for_nuitka.ico"
-  EXE_NAME: "Saino COC.exe"
-  DIST_DIR: "dist"
 
 jobs:
   build-windows:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v3
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
 
-      - name: Install dependencies
-        shell: cmd
-        run: |
-          python -m pip install --upgrade pip
-          pip install nuitka PySide6 pillow img2pdf PyMuPDF pypdf patool
+    - name: Cache pip
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
 
-      - name: Verify files
-        shell: cmd
-        run: |
-          if not exist %SCRIPT% exit /b 1
-          if not exist %ICON_PNG% exit /b 1
+    - name: Upgrade pip
+      run: python -m pip install --upgrade pip
 
-      - name: Create ICO from PNG
-        shell: cmd
-        run: |
-          python -c "from PIL import Image; img=Image.open(r'%ICON_PNG%'); img.save(r'%ICON_ICO%', format='ICO', sizes=[(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)])"
+    - name: Install dependencies
+      run: |
+        pip install --cache-dir "$cache" nuitka PySide6 pillow img2pdf PyMuPDF pypdf patool
 
-      - name: Compile with Nuitka
-        shell: cmd
-        run: |
-          if not exist %DIST_DIR% mkdir %DIST_DIR%
-          python -m nuitka ^
-            --standalone ^
-            --onefile ^
-            --enable-plugin=pyside6 ^
-            --windows-disable-console ^
-            --windows-icon-from-ico=%ICON_ICO% ^
-            --assume-yes-for-downloads ^
-            --output-dir=%DIST_DIR% ^
-            %SCRIPT%
+    - name: Compile PCM2.py with Nuitka
+      run: |
+        python -m nuitka --standalone --onefile --windows-console-mode=disable --mingw64 --lto=yes --enable-plugin=pyside6 --assume-yes-for-downloads PCM2.py
 
-      - name: Rename EXE
-        shell: cmd
-        run: |
-          for %%f in (%DIST_DIR%\*.exe) do copy "%%f" "%DIST_DIR%\%EXE_NAME%" /Y
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: SainoCOC-Windows
-          path: dist/**
+    - name: Upload executable
+      uses: actions/upload-artifact@v4
+      with:
+        name: PCM2-executable
+        path: PCM2.exe
